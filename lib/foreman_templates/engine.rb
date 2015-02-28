@@ -4,6 +4,7 @@ module ForemanTemplates
   #Inherit from the Rails module of the parent app (Foreman), not the plugin.
   #Thus, inhereits from ::Rails::Engine and not from Rails::Engine
   class Engine < ::Rails::Engine
+    isolate_namespace ForemanTemplates
 
     initializer 'foreman_templates.register_plugin', :after=> :finisher_hook do |app|
       Foreman::Plugin.register :foreman_templates do
