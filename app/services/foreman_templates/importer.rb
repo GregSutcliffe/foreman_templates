@@ -56,14 +56,27 @@ module ForemanTemplates
     def new_templates
       HashWithIndifferentAccess[
         loaded_templates.map do |template,data|
-          [template, { "new" => data }] unless db_template_names.include?(template)
+          [template, data] unless db_template_names.include?(template)
         end.compact
       ]
     end
 
     def removed_templates
+      # Need to get the kind from the DB since by definition it's not in the git repo
       HashWithIndifferentAccess[
-        (db_template_names - loaded_templates.keys).map { |tpl| [tpl, { "delete" => "" }] }.compact
+        db_templates.map do |tpl|
+          next if loaded_templates.keys.include?(tpl.name)
+          kind = if tpl.is_a?(ConfigTemplate)
+                   if tpl.snippet?
+                     'snippet'
+                   else
+                     tpl.template_kind.name
+                   end
+                 else
+                   'ptable' if tpl.is_a?(Ptable)
+                 end
+          [tpl, { 'metadata' => { 'kind' => kind } }]
+        end.compact
       ]
     end
 
