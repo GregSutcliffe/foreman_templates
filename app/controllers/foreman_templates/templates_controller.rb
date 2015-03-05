@@ -14,17 +14,30 @@ module ForemanTemplates
         render "_templates_changed"
       else
         notice _("No changes to your templates detected")
-        redirect_to :controller => controller_path
+        #redirect_to :controller => main_app.config_templates_path  - doesn't work :(
+        redirect_to '/config_templates'
       end
     end
 
     def obsolete_and_new
-      if (errors = ::ForemanTemplates::Importer.new.obsolete_and_new(params[:changed])).empty?
-        notice _("Successfully updated environments and Puppet classes from the on-disk Puppet installation")
+      unless params[:changed].present?
+        notice _("No changes to your templates selected")
       else
-        error _("Failed to update environments and Puppet classes from the on-disk Puppet installation: %s") % errors.to_sentence
+        changed = {}
+        ['new','obsolete','updated'].each do |section|
+          next if params[:changed][section].empty?
+          changed[section] = {}
+          params[:changed][section].each { |k,v| changed[section][k] = JSON.parse(v) }
+        end
+
+        if (errors = ::ForemanTemplates::Importer.new.obsolete_and_new(changed)).empty?
+          notice _("Successfully updated templates from the git repo")
+        else
+          error _("Failed to update templates from the git repo: %s") % errors.to_sentence
+        end
       end
-      redirect_to :controller => config_templates_path
+      #redirect_to :controller => main_app.config_templates_path  - doesn't work :(
+      redirect_to '/config_templates'
     end
 
   end

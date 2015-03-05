@@ -34,18 +34,15 @@ module ForemanTemplates
     #               changed[:/new|updated|obsolete/] is an Array of Strings
     # Returns   : Array of Strings containing all record errors
     def obsolete_and_new(changes = { })
-      require 'pry' ; binding.pry
       return if changes.empty?
-      changes.values.map(&:keys).flatten.uniq.each do |env_name|
-        if changes['new'] and changes['new'][env_name].try(:>, '') # we got new classes
-          add_classes_to_foreman(env_name, JSON.parse(changes['new'][env_name]))
-        end
-        if changes['obsolete'] and changes['obsolete'][env_name].try(:>, '') # we need to remove classes
-          remove_classes_from_foreman(env_name, JSON.parse(changes['obsolete'][env_name]))
-        end
-        if changes['updated'] and changes['updated'][env_name].try(:>, '') # we need to update classes
-          update_classes_in_foreman(env_name, JSON.parse(changes['updated'][env_name]))
-        end
+      if changes['obsolete'] # we need to remove templates
+        remove_templates_from_foreman(changes['obsolete'])
+      end
+      if changes['new'] # we got new templates
+        add_templates_to_foreman(changes['new'])
+      end
+      if changes['updated'] # we need to update templates
+        update_templates_in_foreman(changes['updated'])
       end
       []
       #rescue => e
@@ -75,7 +72,7 @@ module ForemanTemplates
                  else
                    'ptable' if tpl.is_a?(Ptable)
                  end
-          [tpl, { 'metadata' => { 'kind' => kind } }]
+          [tpl.name, { 'metadata' => { 'kind' => kind } }]
         end.compact
       ]
     end
@@ -175,6 +172,55 @@ module ForemanTemplates
 
     def db_oses
       @db_oses || Operatingsystem.all
+    end
+
+    def remove_templates_from_foreman(templates)
+      templates.select{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,_|
+        Ptable.find_by_name(tpl).destroy
+      end
+      templates.reject{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,_|
+        ConfigTemplate.find_by_name(tpl).destroy
+      end
+    end
+
+    def add_templates_to_foreman(templates)
+      templates.select{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,data|
+        pt = Ptable.new(
+          :name      => data['name'],
+          :layout    => data['text'],
+          :os_family => data['metadata']['os_family']
+        )
+        pt.save
+      end
+      templates.reject{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,data|
+        snippet = data['metadata']['kind'] == "snippet" ? true : false
+        ct = ConfigTemplate.new(
+          :name                => data['name'],
+          :template            => data['text'],
+          :snippet             => snippet,
+          :operatingsystem_ids => data['metadata']['os_ids'],
+          :template_kind       => TemplateKind.find_by_name(data['metadata']['kind'])
+        )
+        ct.save
+      end
+    end
+
+    def update_templates_in_foreman(templates)
+      templates.select{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,data|
+        pt = Ptable.find_by_name(data['name']).update_attributes({
+          :layout    => data['text'],
+          # :os_family => data['metadata']['os_family']# don't mess with associations yet, see PR #9
+        })
+      end
+      templates.reject{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,data|
+        snippet = data['metadata']['kind'] == "snippet" ? true : false
+        ct = ConfigTemplate.find_by_name(data['name']).update_attributes({
+          :template            => data['text'],
+          :snippet             => snippet,
+          # :operatingsystem_ids => data['metadata']['os_ids'], # don't mess with associations yet, see PR #9
+          :template_kind       => TemplateKind.find_by_name(data['metadata']['kind'])
+        })
+      end
     end
 
   end
