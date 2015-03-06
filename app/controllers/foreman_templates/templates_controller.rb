@@ -26,8 +26,8 @@ module ForemanTemplates
         changed = {}
         ['new','obsolete','updated'].each do |section|
           next if params[:changed][section].empty?
-          changed[section] = {}
-          params[:changed][section].each { |k,v| changed[section][k] = JSON.parse(v) }
+          changed[section] = []
+          params[:changed][section].each { |k,v| changed[section] << JSON.parse(v) }
         end
 
         if (errors = ::ForemanTemplates::Importer.new.obsolete_and_new(changed)).empty?

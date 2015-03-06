@@ -9,8 +9,7 @@ module ForemanTemplates
       @dirname = args[:dirname] || '/'
       @filter  = args[:filter] || nil
 
-      @db_templates     = {}
-      @loaded_templates = {}
+      @loaded_templates = []
     end
 
     def changes
@@ -50,70 +49,10 @@ module ForemanTemplates
       #  [e.to_s]
     end
 
-    def new_templates
-      HashWithIndifferentAccess[
-        loaded_templates.map do |template,data|
-          [template, data] unless db_template_names.include?(template)
-        end.compact
-      ]
-    end
 
-    def removed_templates
-      # Need to get the kind from the DB since by definition it's not in the git repo
-      HashWithIndifferentAccess[
-        db_templates.map do |tpl|
-          next if loaded_templates.keys.include?(tpl.name)
-          kind = if tpl.is_a?(ConfigTemplate)
-                   if tpl.snippet?
-                     'snippet'
-                   else
-                     tpl.template_kind.name
-                   end
-                 else
-                   'ptable' if tpl.is_a?(Ptable)
-                 end
-          [tpl.name, { 'metadata' => { 'kind' => kind } }]
-        end.compact
-      ]
-    end
+    private
 
-    def updated_templates
-      HashWithIndifferentAccess[
-        db_templates.map do |db_template|
-          compare_template(db_template)
-        end.compact
-      ]
-    end
-
-    # This method check if the puppet class exists in this environment, and compare the class params.
-    # Changes in the params are categorized to new parameters, removed parameters and parameters with a new
-    # default value.
-    def compare_template(db_template)
-      return nil unless (data = loaded_templates[db_template.name])
-      changed = false
-      if db_template.is_a? Ptable
-        # Family metadata detection relies on the OS being present in the DB
-        if data['metadata']['os_family'].present? && db_template.os_family != data['metadata']['os_family']
-          changed = true
-        end
-        changed = true unless db_template.layout == data['text']
-      else
-        changed = true unless db_template.template_kind.try('name') == data['metadata']['kind']
-        changed = true unless db_template.operatingsystems.map(&:id).sort == data['metadata']['os_ids']
-        changed = true unless db_template.template == data['text']
-      end
-      return [db_template.name, data] if changed
-      return nil
-    end
-
-    def db_templates
-      return @db_templates if @db_templates.present?
-      @db_templates = [ConfigTemplate.all + Ptable.all].flatten
-    end
-
-    def db_template_names
-      db_templates.map(&:name)
-    end
+    # git repo parsing methods
 
     def loaded_templates
       return @loaded_templates if @loaded_templates.present?
@@ -130,7 +69,7 @@ module ForemanTemplates
           next if metadata.nil?
           next if @filter and not metadata['name'].match(/#{filter}/i)
 
-          @loaded_templates[metadata['name']] = metadata
+          @loaded_templates << metadata
         end
       rescue => e
         Rails.logger.info "TemplatesError: #{e.message}\n#{e.backtrace}"
@@ -154,71 +93,157 @@ module ForemanTemplates
       name     = metadata['name'] || title
       name     = [@prefix, name].compact.join(' ')
 
+
       metadata['os_ids'] = if metadata['oses']
                              metadata['oses'].map do |os|
-                               db_oses.map { |db| db.to_label =~ /^#{os}/ ? db.id : nil}
+                               Operatingsystem.all.map { |db| db.to_label =~ /^#{os}/ ? db.id : nil}
                              end.flatten.compact
                            else
                              []
                            end
       metadata['os_family'] = metadata['os_ids'].map { |id| Operatingsystem.find(id).family }.uniq.first
 
-      return {
-        'name'     => name,
-        'text'     => text,
-        'metadata' => metadata,
-      }
+      metadata['name'] = name
+      metadata['text'] = text
+
+      return metadata
     end
 
-    def db_oses
-      @db_oses || Operatingsystem.all
+    # change detection methods
+
+    def db_templates
+      [ConfigTemplate.includes(:template_kind).all + Ptable.all].flatten
     end
+
+    def new_templates
+      HashWithIndifferentAccess[
+        loaded_templates.map do |data|
+          [data['name'], data] unless db_templates.map(&:name).include?(data['name'])
+        end.compact
+      ]
+    end
+
+    def removed_templates
+      # Need to get the kind from the DB since by definition it's not in the git repo
+      HashWithIndifferentAccess[
+        db_templates.map do |db_tpl|
+          next if loaded_templates.map {|t| t['name'] }.include?(db_tpl.name)
+          kind = if db_tpl.is_a?(ConfigTemplate)
+                   if db_tpl.snippet?
+                     'snippet'
+                   else
+                     db_tpl.template_kind.name
+                   end
+                 else
+                   'ptable' if db_tpl.is_a?(Ptable)
+                 end
+          [db_tpl.name, { 'name' => db_tpl.name, 'kind' => kind }]
+        end.compact
+      ]
+    end
+
+    def updated_templates
+      HashWithIndifferentAccess[
+        loaded_templates.map do |data|
+          compare_template(data)
+        end.compact
+      ]
+    end
+
+    # This method builds a diff of the potential changes in between the db and the repo
+    # There's a lot of string-casting so that Diffy can generate the right diffs for
+    # the Ace JS to display in the modal window.
+    def compare_template(data)
+      db_tpl = case data['kind']
+                when 'ptable'
+                  Ptable.find_by_name(data['name'])
+                when 'snippet'
+                  ConfigTemplate.where(:snippet => true).find_by_name(data['name'])
+                else
+                  tkid = TemplateKind.find_by_name(data['kind']).id
+                  ConfigTemplate.where(:template_kind_id => tkid).find_by_name(data['name'])
+                end
+      return nil unless db_tpl.present?
+
+      # Build an array of things that changed so we can display it to the user
+      changed = []
+      if db_tpl.is_a? Ptable
+        # Family metadata detection relies on the OS being present in the DB
+        if data['os_family'].present? && db_tpl.os_family != data['os_family']
+          changed << "OS family changed"
+          changed << Diffy::Diff.new("#{db_tpl.os_family}\n", "#{data['os_family']}\n").to_s
+        end
+        unless db_tpl.layout == data['text']
+          changed << "Template changes"
+          changed << Diffy::Diff.new(db_tpl.layout, data['text']).to_s
+        end
+      else
+        unless db_tpl.operatingsystems.map(&:id).sort == data['os_ids']
+          changed << 'Operatingsystem associations'
+          new_os = Operatingsystem.where(:id => data['os_ids']).sort.map(&:title).join("\n")
+          db_os  = db_tpl.operatingsystems.map(&:title).join("\n")
+          changed << Diffy::Diff.new("#{db_os}\n", "#{new_os}\n").to_s
+        end
+        unless db_tpl.template == data['text']
+          changed << "Template changes"
+          changed << Diffy::Diff.new(db_tpl.template, data['text']).to_s
+        end
+      end
+      if changed.present?
+        data['diff'] = ["---",changed].flatten.join("\n")
+        return [data['name'], data]
+      end
+      return nil
+    end
+
+
+    # creation/deletion methods
 
     def remove_templates_from_foreman(templates)
-      templates.select{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,_|
-        Ptable.find_by_name(tpl).destroy
+      templates.select{|v| v['kind'] == 'ptable'}.each do |data|
+        Ptable.find_by_name(data['name']).destroy
       end
-      templates.reject{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,_|
-        ConfigTemplate.find_by_name(tpl).destroy
+      templates.reject{|v| v['kind'] == 'ptable'}.each do |data|
+        ConfigTemplate.find_by_name(data['name']).destroy
       end
     end
 
     def add_templates_to_foreman(templates)
-      templates.select{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,data|
+      templates.select{|v| v['kind'] == 'ptable'}.each do |data|
         pt = Ptable.new(
           :name      => data['name'],
           :layout    => data['text'],
-          :os_family => data['metadata']['os_family']
+          :os_family => data['os_family']
         )
         pt.save
       end
-      templates.reject{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,data|
-        snippet = data['metadata']['kind'] == "snippet" ? true : false
+      templates.reject{|v| v['kind'] == 'ptable'}.each do |data|
+        snippet = data['kind'] == "snippet" ? true : false
         ct = ConfigTemplate.new(
           :name                => data['name'],
           :template            => data['text'],
           :snippet             => snippet,
-          :operatingsystem_ids => data['metadata']['os_ids'],
-          :template_kind       => TemplateKind.find_by_name(data['metadata']['kind'])
+          :operatingsystem_ids => data['os_ids'],
+          :template_kind       => TemplateKind.find_by_name(data['kind'])
         )
         ct.save
       end
     end
 
     def update_templates_in_foreman(templates)
-      templates.select{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,data|
+      templates.select{|v| v['kind'] == 'ptable'}.each do |data|
         pt = Ptable.find_by_name(data['name']).update_attributes({
           :layout    => data['text'],
-          # :os_family => data['metadata']['os_family']# don't mess with associations yet, see PR #9
+          :os_family => data['os_family'],
         })
       end
-      templates.reject{|k,v| v['metadata']['kind'] == 'ptable'}.each do |tpl,data|
-        snippet = data['metadata']['kind'] == "snippet" ? true : false
+      templates.reject{|v| v['kind'] == 'ptable'}.each do |data|
+        snippet = data['kind'] == "snippet" ? true : false
         ct = ConfigTemplate.find_by_name(data['name']).update_attributes({
           :template            => data['text'],
           :snippet             => snippet,
-          # :operatingsystem_ids => data['metadata']['os_ids'], # don't mess with associations yet, see PR #9
-          :template_kind       => TemplateKind.find_by_name(data['metadata']['kind'])
+          :operatingsystem_ids => data['os_ids'],
+          :template_kind       => TemplateKind.find_by_name(data['kind'])
         })
       end
     end

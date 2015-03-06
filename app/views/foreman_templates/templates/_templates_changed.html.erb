@@ -1,4 +1,4 @@
-<% javascript 'puppetclasses_or_envs_changed' %>
+<%= javascript 'reports', 'ace/ace', 'puppetclasses_or_envs_changed' %>
 <% title _("Changed templates") %>
 <%= form_tag send("obsolete_and_new_#{controller_name}_path") do %>
   <h4><%= _("Select the changes you want to realize in Foreman") %></h4>
@@ -25,12 +25,13 @@
         <th><%= _("Operation") %></th>
         <th><%= _("Type") %></th>
         <th><%= _("Template") %></th>
+        <th><%= _("Changes") %></th>
       </tr>
     </thead>
     <tbody>
       <% for kind in ["new", "obsolete", "updated"] %>
         <% unless (templates = @changed[kind]).empty? %>
-          <% for template in templates.keys.sort_by {|t| @changed[kind][t]['metadata']['kind'] } %>
+          <% for template in templates.keys.sort_by {|t| @changed[kind][t]['kind'] } %>
             <tr>
               <td>
                 <%= check_box_tag "changed[#{kind}][#{template}]", @changed[kind][template].to_json, false, :class => "env_select_boxes env_select_boxes_#{kind} env_select_boxes_env_#{template}" %>
@@ -39,10 +40,13 @@
                 <%= {"new" => _("Add:"), "obsolete" => _("Remove:"), "updated" => _("Update:")}[kind] %>
               </td>
               <td>
-                <%= @changed[kind][template]['metadata']['kind'].capitalize %>
+                <%= @changed[kind][template]['kind'].capitalize %>
               </td>
               <td>
                 <%= template %>
+              </td>
+              <td>
+<%= @changed[kind][template]['diff'] || _("(no diff)") %>
               </td>
             </tr>
           <% end %>
@@ -54,4 +58,22 @@
     <%= link_to _("Cancel"), :back, :class => "btn btn-default" %>
     <%= submit_tag _("Update"), :class => "btn btn-primary" %>
   </div>
+
+<%# copied from reports#show for the modal diff view %>
+<div id="diff-modal" class="modal fade">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button type="button" class="close" data-dismiss="modal" aria-hidden="true">&times;</button>
+        <h4 class="modal-title"><%= _("Diff View") %></h4>
+      </div>
+      <div  id="diff-modal-editor" class="modal-body">
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-default" data-dismiss="modal"><%= _("Close") %></button>
+      </div>
+    </div><!-- /.modal-content -->
+  </div><!-- /.modal-dialog -->
+</div><!-- /.modal -->
 <% end %>
